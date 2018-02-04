@@ -111,3 +111,7 @@ ENV/
 
 # Mac
 .DS_Store
+
+# params
+params
+*.pth
