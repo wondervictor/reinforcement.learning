@@ -198,7 +198,9 @@ class DQN(object):
         return action_index, q_value
 
     def apply_action(self, env, action):
-        _, reward, terminate, _ = env.step(action)
+        observation, _, terminate, _ = env.step(action)
+        position, velocity = observation
+        reward = position + 0.5
         next_state = get_screen(2)
         return reward, next_state, terminate
 
