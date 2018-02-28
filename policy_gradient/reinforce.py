@@ -1,4 +1,32 @@
 # -*- coding: utf-8 -*-
+
+"""
+
+MIT License
+
+Copyright (c) 2018 Vic Chan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+"""
+
+
 """
 Policy Gradient: REINFORCE Algorithm
 
@@ -24,7 +52,7 @@ class Policy(object):
         self.num_actions = num_actions
 
         self.states = tf.placeholder(tf.float32, shape=[None, num_state])
-        self.actions = tf.placeholder(tf.int32, shape=[None, ])
+        self.actions = tf.placeholder(tf.int32, shape=[None, num_actions])
         self.value = tf.placeholder(tf.float32, shape=[None, ])
 
         # build network
@@ -33,12 +61,12 @@ class Policy(object):
     def _build_network(self):
         with tf.name_scope('policy_network'):
             fc1 = tf.layers.dense(self.states, units=self.num_state * 5, activation=tf.nn.tanh, name='fc1')
-            output = tf.layers.dense(fc1, units=self.num_actions, activation=tf.nn.softmax, name='output')
-        self.output_layer = output
+            output = tf.layers.dense(fc1, units=self.num_actions, name='output')
+        self.output_layer = tf.nn.softmax(output)
 
         with tf.name_scope('loss'):
-            action_probs = tf.gather(output, self.actions)
-            loss = -tf.log(action_probs) * self.value
+            action_probs = tf.nn.softmax_cross_entropy_with_logits(logits=output, labels=self.actions)
+            loss = tf.reduce_mean(action_probs * self.value)
         self.loss = loss
 
         with tf.name_scope('train_op'):
@@ -135,7 +163,9 @@ def reinforce(env, gamma, num_actions, num_state, epoches):
 
                 episode_state.append(state)
                 episode_reward.append(reward)
-                episode_action.append(action)
+                zero_action = [0, 0, 0]
+                zero_action[action] = 1
+                episode_action.append(zero_action)
 
                 overall_rewards[epoch] += reward
                 overall_step[epoch] = t
@@ -143,7 +173,7 @@ def reinforce(env, gamma, num_actions, num_state, epoches):
                     break
                 state = next_state
 
-            print("Episode: {} Time: {}".format(epoch, overall_step[epoch]))
+            print("Episode: {} Steps: {} Score: {}".format(epoch, overall_step[epoch], overall_rewards[epoch]))
             # learn
             advantage = []
             total_return = []
