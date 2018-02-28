@@ -35,11 +35,11 @@ Actor Critic Algorithm
 import gym
 import numpy as np
 import tensorflow as tf
-
+from itertools import count
 
 class Actor(object):
 
-    def __init__(self, state_space, action_space, ):
+    def __init__(self, state_space, action_space):
 
         self.state_space = state_space
         self.action_space = action_space
@@ -103,7 +103,10 @@ class Critic(object):
 
     def __init__(self, state_space):
         self.state = tf.placeholder(tf.float32, [None, state_space])
-        self.delta =  tf.placeholder(tf.float32, [None, ])
+        self.next_state = tf.placeholder(tf.float32, [None, state_space])
+        self.gamma = tf.placeholder(tf.float32)
+        self.reward = tf.placeholder(tf.float32, [None,])
+        self.next_value = tf.placeholder(tf.float32, [None, ])
 
         self._build_network()
 
@@ -125,8 +128,10 @@ class Critic(object):
         self.output = output
 
         with tf.name_scope('critic_loss'):
-            loss = tf.reduce_mean(tf.square(output-self.delta))
+            td_error = self.reward + self.gamma * self.next_value - output
+            loss = tf.reduce_mean(tf.square(td_error))
         self.loss = loss
+        self.td_error = td_error
 
         with tf.name_scope('critic_train_op'):
             train_op = tf.train.AdamOptimizer(learning_rate=5e-4).minimize(loss)
@@ -136,10 +141,69 @@ class Critic(object):
         value = sess.run(self.output, feed_dict={self.state: [state]})
         return value
 
-    def update(self, sess, state, deltas):
+    def update(self, sess, state, next_state, gamma, reward):
+        next_value = sess.run(self.output, feed_dict={self.state: next_state})
         feed_dict = {
             self.state: state,
-            self.delta: deltas
+            self.gamma: gamma,
+            self.next_value: next_value,
+            self.reward: reward
         }
-        _loss, _ = sess.run([self.loss, self.train_op], feed_dict=feed_dict)
-        print("[Critic] Loss: {}".format(_loss))
+        _td_error, _loss, _ = sess.run([self.td_error, self.loss, self.train_op], feed_dict=feed_dict)
+        print("[Critic] Loss: {} TD-error: {}".format(_loss, _td_error))
+        return _td_error
+
+
+def actor_critic(env, gamma, num_actions, num_states, epoches, render):
+
+    actor = Actor(num_states, num_actions)
+    critic = Critic(num_states)
+
+    with tf.Session() as sess:
+
+        sess.run(tf.global_variables_initializer())
+        time_steps = []
+        for epoch in xrange(epoches):
+
+            state = env.reset()
+            t = 0
+            I = 1
+            while True:
+
+                if render:
+                    env.render()
+                action = actor.step(sess, state)
+                next_state, reward, done, _ = env.step(action)
+                t += 1
+                if done:
+                    time_steps.append(t)
+                    break
+
+                # train steps
+
+                td_error = critic.update(
+                    sess=sess,
+                    state=[state],
+                    next_state=[next_state],
+                    reward=[reward],
+                    gamma=gamma
+                )
+
+                actor.update(sess, [state], [action], I*td_error)
+                I *= gamma
+                state = next_state
+
+
+if __name__ == '__main__':
+
+    env = gym.make('MountainCar-v0').unwrapped
+    action_space = 3
+    obs_space = 2
+
+    actor_critic(env, 0.95, action_space, obs_space, 20, True)
+
+
+
+
+
+
