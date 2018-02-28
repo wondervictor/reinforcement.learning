@@ -45,7 +45,7 @@ class Actor(object):
         self.action_space = action_space
 
         self.state = tf.placeholder(tf.float32, shape=[None, state_space])
-        self.action = tf.placeholder(tf.int32, shape=[None, action_space])
+        self.action = tf.placeholder(tf.float32, shape=[None, action_space])
         self.delta = tf.placeholder(tf.float32, shape=[None, ])
 
         self._build_network()
@@ -71,8 +71,7 @@ class Actor(object):
         self.output = output
 
         with tf.name_scope('actor_loss'):
-
-            loss = tf.log(tf.reduce_sum(tf.multiply(output, self.action), reduction_indices=1))
+            loss = -tf.log(tf.reduce_sum(tf.multiply(output, self.action), reduction_indices=1))
             loss = tf.reduce_mean(tf.multiply(loss, self.delta))
         self.loss = loss
 
@@ -105,7 +104,7 @@ class Critic(object):
         self.state = tf.placeholder(tf.float32, [None, state_space])
         self.next_state = tf.placeholder(tf.float32, [None, state_space])
         self.gamma = tf.placeholder(tf.float32)
-        self.reward = tf.placeholder(tf.float32, [None,])
+        self.reward = tf.placeholder(tf.float32, [None, ])
         self.next_value = tf.placeholder(tf.float32, [None, ])
 
         self._build_network()
@@ -143,6 +142,7 @@ class Critic(object):
 
     def update(self, sess, state, next_state, gamma, reward):
         next_value = sess.run(self.output, feed_dict={self.state: next_state})
+        next_value = next_value.reshape(-1).tolist()
         feed_dict = {
             self.state: state,
             self.gamma: gamma,
@@ -150,7 +150,8 @@ class Critic(object):
             self.reward: reward
         }
         _td_error, _loss, _ = sess.run([self.td_error, self.loss, self.train_op], feed_dict=feed_dict)
-        print("[Critic] Loss: {} TD-error: {}".format(_loss, _td_error))
+        _td_error = _td_error.reshape(-1)
+        print("[Critic] Loss: {} TD-error: {}".format(_loss, _td_error[0]))
         return _td_error
 
 
@@ -164,7 +165,7 @@ def actor_critic(env, gamma, num_actions, num_states, epoches, render):
         sess.run(tf.global_variables_initializer())
         time_steps = []
         for epoch in xrange(epoches):
-
+            rewards = []
             state = env.reset()
             t = 0
             I = 1
@@ -175,6 +176,7 @@ def actor_critic(env, gamma, num_actions, num_states, epoches, render):
                 action = actor.step(sess, state)
                 next_state, reward, done, _ = env.step(action)
                 t += 1
+                rewards.append(reward)
                 if done:
                     time_steps.append(t)
                     break
@@ -183,15 +185,17 @@ def actor_critic(env, gamma, num_actions, num_states, epoches, render):
 
                 td_error = critic.update(
                     sess=sess,
-                    state=[state],
-                    next_state=[next_state],
+                    state=[state.tolist()],
+                    next_state=[next_state.tolist()],
                     reward=[reward],
                     gamma=gamma
                 )
-
-                actor.update(sess, [state], [action], I*td_error)
+                action_ = [0]*num_actions
+                action_[action] = 1
+                actor.update(sess, [state.tolist()], [action_], I*td_error)
                 I *= gamma
                 state = next_state
+            print("Epoch: {} Reward: {}".format(epoch, np.sum(rewards)))
 
 
 if __name__ == '__main__':
@@ -200,7 +204,7 @@ if __name__ == '__main__':
     action_space = 3
     obs_space = 2
 
-    actor_critic(env, 0.95, action_space, obs_space, 20, True)
+    actor_critic(env, 0.99, action_space, obs_space, 20, True)
 
 
 
