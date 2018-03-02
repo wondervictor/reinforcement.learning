@@ -25,3 +25,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 """
+
+"""
+Asynchoronous Advantage Actor Critic (A3C)
+"""
+
+
