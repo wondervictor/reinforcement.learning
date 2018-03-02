@@ -79,6 +79,9 @@ class Actor(object):
         # placeholders
         self.state = tf.placeholder(tf.float32, [None, num_states])
         self.q_grad = tf.placeholder(tf.float32, [None, num_actions])
+
+        self.eval_scope = 'eval_actor_scope'
+        self.target_scope = 'target_actor_scope'
         # build
         self.eval = self._build_eval()
         self.target = self._build_target()
@@ -159,7 +162,6 @@ class Actor(object):
             self.sess.run(tf.initialize_variables(train_op_vars))
         return train_op
 
-
     def _update_target_op(self):
         eval_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='actor_network')
         target_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='target_actor_network')
@@ -181,69 +183,139 @@ class Actor(object):
     def update_target(self):
         self.sess.run(self.target_update_op)
 
+
 class Critic(object):
 
     # Q(s,a|theta)
     #
     #
-    def __init__(self, num_states, num_actions, scope, trainable):
+    def __init__(self, sess, num_states, num_actions, tau):
 
+        self.sess = sess
+        self.num_actions = num_actions
+        self.num_states = num_states
+        self.tau = tau
+
+        # placeholders
         self.state = tf.placeholder(tf.float32, [None, num_states])
         self.action = tf.placeholder(tf.float32, [None, num_actions])
-        self.scope = scope
-        self._build_network(trainable)
+        self.label = tf.placeholder(tf.float32, [None, 1])
 
-    def _build_network(self, trainable):
+        self.eval_scope = 'eval_critic_scope'
+        self.target_scope = 'target_critic_scope'
 
-        with tf.name_scope(self.scope + '_critic_network'):
-            state_fc = tf.layers.dense(
-                inputs=self.state,
-                units=30,
-                activation=tf.nn.leaky_relu,
-                name='state_fc',
-                trainable=trainable
-            )
+        self.eval = self._build_eval()
+        self.target = self._build_target()
 
-            action_fc = tf.layers.dense(
-                inputs=self.action,
-                units=10,
-                activation=tf.nn.leaky_relu,
-                name='action_fc',
-                trainable=trainable
-            )
+        self.train_op = self._create_train_op()
+        self.q_grad = self._get_q_grad_op()
+        self.target_update_op = self._update_target_op()
 
-            fc_concat = tf.concat([action_fc, state_fc], axis=1)
+    def _build_network(self):
 
-            fc = tf.layers.dense(
-                inputs=fc_concat,
-                units=30,
-                activation=tf.nn.leaky_relu,
-                name='fc',
-                trainable=trainable
-            )
+        state_fc = tf.layers.dense(
+            inputs=self.state,
+            units=30,
+            activation=tf.nn.leaky_relu,
+            name='state_fc',
+        )
 
-            output = tf.layers.dense(
-                inputs=fc,
-                units=1,
-                name='output',
-                trainable=trainable
-            )
-        self.output = output
+        action_fc = tf.layers.dense(
+            inputs=self.action,
+            units=10,
+            activation=tf.nn.leaky_relu,
+            name='action_fc',
+        )
 
+        fc_concat = tf.concat([action_fc, state_fc], axis=1)
+
+        fc = tf.layers.dense(
+            inputs=fc_concat,
+            units=30,
+            activation=tf.nn.leaky_relu,
+            name='fc',
+        )
+
+        output = tf.layers.dense(
+            inputs=fc,
+            units=1,
+            name='output',
+        )
+        return output
+
+    def predict_value(self, state, action):
+        feed_dict = {
+            self.state: state,
+            self.action: action
+        }
+
+        val = self.sess.run(self.eval, feed_dict=feed_dict)
+        return val
+
+    def predict_target_value(self, state, action):
+        feed_dict = {
+            self.state: state,
+            self.action: action
+        }
+
+        val = self.sess.run(self.target, feed_dict=feed_dict)
+        return val
+
+    def _build_target(self):
+        with tf.variable_scope(self.target_scope):
+            output = self._build_network()
+        return output
+
+    def _build_eval(self):
+        with tf.variable_scope(self.eval_scope):
+            output = self._build_network()
         with tf.name_scope('loss'):
+            loss = tf.reduce_mean(tf.square(output-self.label))
+        self.loss = loss
+        return output
 
+    def _get_q_grad_op(self):
+        grad = tf.gradients(self.eval, self.action)
+        return grad
 
-    def step(self, sess,):
-        pass
+    def get_q_gradients(self, state, action):
+        feed_dict = {
+            self.state: state,
+            self.action: action
+        }
 
-    def update(self, sess, is_target,):
+        return self.sess.run(self.q_grad, feed_dict=feed_dict)
 
-        if is_target:
-            # update target network
-            pass
-        else:
-            # update eval network
-            pass
+    def _update_target_op(self):
+        eval_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.eval_scope)
+        target_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.target_scope)
+
+        update_op_list = [target_vars[i].assign((eval_vars[i]*self.tau + target_vars[i]*(1-self.tau)))
+                          for i in range(len(eval_vars))]
+
+        update_op = tf.group(*update_op_list)
+        return update_op
+
+    def _create_train_op(self):
+        with tf.variable_scope('train_op'):
+            optimizer = tf.train.AdamOptimizer(learning_rate=0.001)
+            train_op = optimizer.minimize(self.loss)
+            train_op_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='train_op')
+            self.sess.run(tf.variables_initializer(train_op_vars))
+        return train_op
+
+    def update_eval(self, state, action, label):
+        feed_dict = {
+            self.state: state,
+            self.action: action,
+            self.label: label
+        }
+
+        _loss, _ = self.sess.run([self.loss, self.train_op], feed_dict=feed_dict)
+        return _loss
+
+    def update_target(self):
+        self.sess.run(self.target_update_op)
 
 
 def ddpg(env, num_states, num_actions, episode):
