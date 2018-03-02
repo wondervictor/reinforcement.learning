@@ -32,6 +32,7 @@ import pickle
 import numpy as np
 import tensorflow as tf
 from collections import namedtuple
+from exploration_noise import Noise
 
 
 Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward', 'terminate'))
@@ -89,13 +90,11 @@ class Actor(object):
         self._build_policy_gradient()
         self.optimizer = self._create_optimizer()
         self.train_op = self._train_op()
-
-
         self.target_update_op = self._update_target_op()
 
     def _build_target(self):
         eval_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='actor_network')
-        self.sess.run(tf.initialize_variables(eval_vars))
+        self.sess.run(tf.variables_initializer(eval_vars))
         with tf.variable_scope('target_actor_network'):
             output = self._build_network()
         target_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='target_actor_network')
@@ -151,15 +150,15 @@ class Actor(object):
     def _build_policy_gradient(self):
         with tf.name_scope('loss'):
             eval_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='actor_network')
-            N = self.q_grad.shape[0]
-            policy_gradient = tf.gradients(self.eval, eval_vars, grad_ys=self.q_grad) / N
-        self.grad_and_vars = zip(eval_vars, policy_gradient)
+            # N = self.q_grad.shape[0]
+            policy_gradient = tf.gradients(self.eval, eval_vars, grad_ys=-self.q_grad)
+        self.grad_and_vars = zip(policy_gradient, eval_vars)
 
     def _train_op(self):
         with tf.variable_scope('actor_train_op'):
-            train_op = self.optimizer.apply_gradients(self.grad_and_vars, global_step=tf.contrib.frameworks.get_global_step())
+            train_op = self.optimizer.apply_gradients(self.grad_and_vars, global_step=None)
             train_op_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='actor_train_op')
-            self.sess.run(tf.initialize_variables(train_op_vars))
+            self.sess.run(tf.variables_initializer(train_op_vars))
         return train_op
 
     def _update_target_op(self):
@@ -177,7 +176,7 @@ class Actor(object):
             self.state: state,
             self.q_grad: q_grad
         }
-
+        grads = self.sess.run(self.grad_and_vars, feed_dict=feed_dict)
         self.sess.run(self.train_op, feed_dict=feed_dict)
 
     def update_target(self):
@@ -187,8 +186,6 @@ class Actor(object):
 class Critic(object):
 
     # Q(s,a|theta)
-    #
-    #
     def __init__(self, sess, num_states, num_actions, tau):
 
         self.sess = sess
@@ -199,7 +196,7 @@ class Critic(object):
         # placeholders
         self.state = tf.placeholder(tf.float32, [None, num_states])
         self.action = tf.placeholder(tf.float32, [None, num_actions])
-        self.label = tf.placeholder(tf.float32, [None, 1])
+        self.label = tf.placeholder(tf.float32, [None, ])
 
         self.eval_scope = 'eval_critic_scope'
         self.target_scope = 'target_critic_scope'
@@ -262,8 +259,13 @@ class Critic(object):
         return val
 
     def _build_target(self):
+        eval_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.eval_scope)
+        self.sess.run(tf.variables_initializer(eval_vars))
         with tf.variable_scope(self.target_scope):
             output = self._build_network()
+        target_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=self.target_scope)
+        target_init_list = [tf.assign(target_vars[k], eval_vars[k]) for k in range(len(eval_vars))]
+        self.sess.run(target_init_list)
         return output
 
     def _build_eval(self):
@@ -318,11 +320,6 @@ class Critic(object):
         self.sess.run(self.target_update_op)
 
 
-def generate_action(action):
-    # TODO: add O-U Noise
-    return action
-
-
 def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
 
     sess = tf.Session()
@@ -341,14 +338,22 @@ def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
         tau=tau
     )
 
+    noise = Noise(num_actions, sigma=1.)
+
     for episode in xrange(episodes):
 
         state = env.reset()
+        env.render()
 
         while True:
 
-            action = generate_action(actor.predict_action(state))
+            action = actor.predict_action([state])[0] + noise.generate_noise()
             next_state, reward, done, _ = env.step(action)
+            env.render()
+
+            if done:
+                break
+
             memory.push(
                 state=state,
                 next_state=next_state,
@@ -357,25 +362,27 @@ def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
                 action=action
             )
 
+            if len(memory) < 10*batch_size:
+                continue
+
             # train
 
             batch_data = memory.sample(batch_size)
             states = [x.state for x in batch_data]
             next_states = [x.next_state for x in batch_data]
             rewards = [x.reward for x in batch_data]
-            actions = [x.action for x in batch_data]
+            actions = [x.action.tolist() for x in batch_data]
 
             y = np.zeros(batch_size)
             for i in xrange(len(next_states)):
-                gen_action = actor.predict_target_action(next_states[i])
-                gen_value = critic.predict_target_value(next_state[i], gen_action)
-                y[i] = rewards[i] + gamma * gen_value
-
+                gen_action = actor.predict_target_action([next_states[i]])
+                gen_value = critic.predict_target_value([next_states[i]], gen_action)
+                y[i] = rewards[i] + gamma * gen_value[0]
             # update critic
+            q_grad = critic.get_q_gradients(states, actions)[0]
             critic_loss = critic.update_eval(states, actions, y)
-            print("[Critic] Loss: {}".format(critic_loss))
+            print("[Episode {}][Critic] Loss: {}".format(episode, critic_loss))
             # update policy
-            q_grad = critic.get_q_gradients(states, actions)
             actor.update_eval(states, q_grad)
 
             # update target
@@ -385,4 +392,16 @@ def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
 
 if __name__ == '__main__':
 
-    env = gym.make('').unwrapped
+    env = gym.make('Hopper-v1')
+
+    action_space = 3
+    observation_space = 11
+    ddpg(
+        env=env,
+        num_actions=action_space,
+        num_states=observation_space,
+        episodes=5000,
+        tau=0.001,
+        batch_size=64,
+        gamma=0.99
+    )

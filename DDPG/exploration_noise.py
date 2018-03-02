@@ -26,14 +26,25 @@ SOFTWARE.
 
 """
 
+import numpy as np
+
+
 """
 Ornstein-Uhlenbeck Noise for Exploration
 """
 
-import numpy as np
-
 
 class Noise(object):
 
-    def __init__(self):
-        pass
+    def __init__(self, num_actions, theta=0.15, mu=0., sigma=0.1):
+        self.num_actions = num_actions
+        self.theta = theta
+        self.mu = mu
+        self.sigma = sigma
+
+        self.current_value = np.ones(shape=[self.num_actions]) * self.mu
+
+    def generate_noise(self):
+        x = self.theta * (self.mu - self.current_value) + + self.sigma * np.random.randn(self.num_actions)
+        self.current_value += x
+        return self.current_value
