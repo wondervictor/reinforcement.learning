@@ -318,11 +318,69 @@ class Critic(object):
         self.sess.run(self.target_update_op)
 
 
-def ddpg(env, num_states, num_actions, episode):
+def generate_action(action):
+    # TODO: add O-U Noise
+    return action
 
-    actor = Actor(num_states, num_actions, 'eval')
-    target_actor = Actor(num_states, num_actions, 'target')
-    critic = Critic()
+
+def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
+
+    sess = tf.Session()
+    memory = ReplayMemory(5000)
+    actor = Actor(
+        sess=sess,
+        num_states=num_states,
+        num_actions=num_actions,
+        tau=tau
+    )
+
+    critic = Critic(
+        sess=sess,
+        num_states=num_states,
+        num_actions=num_actions,
+        tau=tau
+    )
+
+    for episode in xrange(episodes):
+
+        state = env.reset()
+
+        while True:
+
+            action = generate_action(actor.predict_action(state))
+            next_state, reward, done, _ = env.step(action)
+            memory.push(
+                state=state,
+                next_state=next_state,
+                reward=reward,
+                terminate=done,
+                action=action
+            )
+
+            # train
+
+            batch_data = memory.sample(batch_size)
+            states = [x.state for x in batch_data]
+            next_states = [x.next_state for x in batch_data]
+            rewards = [x.reward for x in batch_data]
+            actions = [x.action for x in batch_data]
+
+            y = np.zeros(batch_size)
+            for i in xrange(len(next_states)):
+                gen_action = actor.predict_target_action(next_states[i])
+                gen_value = critic.predict_target_value(next_state[i], gen_action)
+                y[i] = rewards[i] + gamma * gen_value
+
+            # update critic
+            critic_loss = critic.update_eval(states, actions, y)
+            print("[Critic] Loss: {}".format(critic_loss))
+            # update policy
+            q_grad = critic.get_q_gradients(states, actions)
+            actor.update_eval(states, q_grad)
+
+            # update target
+            actor.update_target()
+            critic.update_target()
 
 
 if __name__ == '__main__':
