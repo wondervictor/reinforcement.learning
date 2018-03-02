@@ -27,6 +27,7 @@ SOFTWARE.
 """
 
 import gym
+import math
 import random
 import pickle
 import numpy as np
@@ -81,6 +82,8 @@ class Actor(object):
         self.state = tf.placeholder(tf.float32, [None, num_states])
         self.q_grad = tf.placeholder(tf.float32, [None, num_actions])
 
+        self.kernel_initializer = tf.random_normal_initializer(mean=0., stddev=0.01)
+
         self.eval_scope = 'eval_actor_scope'
         self.target_scope = 'target_actor_scope'
         # build
@@ -115,6 +118,7 @@ class Actor(object):
             activation=tf.nn.leaky_relu,
             bias_initializer=tf.constant_initializer(0.1),
             name='fc1',
+            kernel_initializer=self.kernel_initializer
         )
 
         fc2 = tf.layers.dense(
@@ -123,6 +127,7 @@ class Actor(object):
             activation=tf.nn.leaky_relu,
             bias_initializer=tf.constant_initializer(0.1),
             name='fc2',
+            kernel_initializer=self.kernel_initializer
         )
 
         output = tf.layers.dense(
@@ -130,6 +135,7 @@ class Actor(object):
             units=self.num_actions,
             bias_initializer=tf.constant_initializer(0.0),
             name='output',
+            kernel_initializer=self.kernel_initializer
         )
 
         return output
@@ -176,7 +182,6 @@ class Actor(object):
             self.state: state,
             self.q_grad: q_grad
         }
-        grads = self.sess.run(self.grad_and_vars, feed_dict=feed_dict)
         self.sess.run(self.train_op, feed_dict=feed_dict)
 
     def update_target(self):
@@ -198,6 +203,8 @@ class Critic(object):
         self.action = tf.placeholder(tf.float32, [None, num_actions])
         self.label = tf.placeholder(tf.float32, [None, ])
 
+        self.kernel_initializer = tf.random_normal_initializer(mean=0., stddev=0.01)
+
         self.eval_scope = 'eval_critic_scope'
         self.target_scope = 'target_critic_scope'
 
@@ -215,6 +222,7 @@ class Critic(object):
             units=30,
             activation=tf.nn.leaky_relu,
             name='state_fc',
+            kernel_initializer=self.kernel_initializer
         )
 
         action_fc = tf.layers.dense(
@@ -222,6 +230,7 @@ class Critic(object):
             units=10,
             activation=tf.nn.leaky_relu,
             name='action_fc',
+            kernel_initializer=self.kernel_initializer
         )
 
         fc_concat = tf.concat([action_fc, state_fc], axis=1)
@@ -231,12 +240,14 @@ class Critic(object):
             units=30,
             activation=tf.nn.leaky_relu,
             name='fc',
+            kernel_initializer=self.kernel_initializer
         )
 
         output = tf.layers.dense(
             inputs=fc,
             units=1,
             name='output',
+            kernel_initializer=self.kernel_initializer
         )
         return output
 
@@ -340,20 +351,29 @@ def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
 
     noise = Noise(num_actions, sigma=1.)
 
+    noise_eps_max = 10
+    noise_eps_min = 1
+    noise_decay_times = 1000
+    steps = 0
+
     for episode in xrange(episodes):
 
         state = env.reset()
         env.render()
 
         while True:
-
-            action = actor.predict_action([state])[0] + noise.generate_noise()
+            steps += 1
+            if len(memory) < 10*batch_size:
+                action = env.action_space.sample()
+            else:
+                action = actor.predict_action([state])[0]
+                action = action + noise.generate_noise() # * ((noise_eps_max-noise_eps_min)*math.exp(-steps/noise_decay_times) + noise_eps_min)
             next_state, reward, done, _ = env.step(action)
             env.render()
-
             if done:
-                break
-
+                done = 1
+            else:
+                done = 0
             memory.push(
                 state=state,
                 next_state=next_state,
@@ -362,26 +382,27 @@ def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
                 action=action
             )
 
-            if len(memory) < 10*batch_size:
-                continue
+            if done:
+                break
 
             # train
-
+            if len(memory) < 10 * batch_size:
+                continue
             batch_data = memory.sample(batch_size)
             states = [x.state for x in batch_data]
             next_states = [x.next_state for x in batch_data]
             rewards = [x.reward for x in batch_data]
             actions = [x.action.tolist() for x in batch_data]
+            done = np.array([x.terminate for x in batch_data])
 
-            y = np.zeros(batch_size)
-            for i in xrange(len(next_states)):
-                gen_action = actor.predict_target_action([next_states[i]])
-                gen_value = critic.predict_target_value([next_states[i]], gen_action)
-                y[i] = rewards[i] + gamma * gen_value[0]
+            gen_action = actor.predict_target_action(next_states)
+            gen_value = critic.predict_target_value(next_states, gen_action).reshape([batch_size],)
+            y = rewards + gen_value * gamma * (1-done)
             # update critic
-            q_grad = critic.get_q_gradients(states, actions)[0]
+            q_grad = critic.get_q_gradients(states, actions)[0]/batch_size
             critic_loss = critic.update_eval(states, actions, y)
-            print("[Episode {}][Critic] Loss: {}".format(episode, critic_loss))
+            if steps % 10 == 0:
+                print("[Episode {}][Critic] Loss: {} Y:{}".format(episode, critic_loss,np.sum(y)))
             # update policy
             actor.update_eval(states, q_grad)
 
@@ -391,11 +412,13 @@ def ddpg(env, num_states, num_actions, episodes, tau, batch_size, gamma):
 
 
 if __name__ == '__main__':
-
-    env = gym.make('Hopper-v1')
+    hopper = 'Hopper-v1'
+    mountain_car = 'MountainCar-v0'
+    env = gym.make(hopper)
 
     action_space = 3
     observation_space = 11
+
     ddpg(
         env=env,
         num_actions=action_space,
@@ -403,5 +426,5 @@ if __name__ == '__main__':
         episodes=5000,
         tau=0.001,
         batch_size=64,
-        gamma=0.99
+        gamma=0.90
     )
