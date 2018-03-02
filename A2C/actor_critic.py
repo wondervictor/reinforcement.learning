@@ -193,7 +193,7 @@ def actor_critic(env, gamma, num_actions, num_states, epoches, render):
                 action_ = [0]*num_actions
                 action_[action] = 1
                 actor.update(sess, [state.tolist()], [action_], I*td_error)
-                I *= gamma
+                #I *= gamma
                 state = next_state
             print("Epoch: {} Reward: {}".format(epoch, np.sum(rewards)))
 
@@ -204,7 +204,7 @@ if __name__ == '__main__':
     action_space = 3
     obs_space = 2
 
-    actor_critic(env, 0.99, action_space, obs_space, 20, True)
+    actor_critic(env, 0.999, action_space, obs_space, 20, True)
 
 
 
